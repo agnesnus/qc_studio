@@ -4,7 +4,7 @@ QC Studio — Unified Application
 Integrated platform for steroid panel database management, QC data export, and dashboard visualization.
 
 Features:
-1. Steroid Panel Database: SQLite database for LC-MS/MS steroid panel results
+1. Steroid Panel Database: SQLite database for LC-MS/MS steroid panel results (built from uploaded files)
 2. QC Export: Export CSV files with HQC and LQC values for all hormones
 3. QC Dashboard: Interactive Levey-Jennings charts with 2SD/3SD bands
 
@@ -299,22 +299,31 @@ def get_connection(db_path=None):
     return conn
 
 
-def init_db(db_path=None):
-    """Create schema and seed reference data."""
+def ensure_db_initialized(db_path=None):
+    """Create schema and seed reference data on-demand (from first file upload)."""
     conn = get_connection(db_path)
+    cursor = conn.cursor()
+    
+    # Create schema if not exists
     conn.executescript(SCHEMA_SQL)
 
-    for analyte in ANALYTES:
-        conn.execute(
-            "INSERT OR IGNORE INTO analytes (name, panel, display_order) VALUES (?, ?, ?)",
-            (analyte["name"], analyte["panel"], analyte["display_order"])
-        )
+    # Seed analytes if not already present
+    cursor.execute("SELECT COUNT(*) FROM analytes")
+    if cursor.fetchone()[0] == 0:
+        for analyte in ANALYTES:
+            conn.execute(
+                "INSERT OR IGNORE INTO analytes (name, panel, display_order) VALUES (?, ?, ?)",
+                (analyte["name"], analyte["panel"], analyte["display_order"])
+            )
 
-    for st_item in SAMPLE_TYPES:
-        conn.execute(
-            "INSERT OR IGNORE INTO sample_types (type_code, description) VALUES (?, ?)",
-            (st_item["type_code"], st_item["description"])
-        )
+    # Seed sample types if not already present
+    cursor.execute("SELECT COUNT(*) FROM sample_types")
+    if cursor.fetchone()[0] == 0:
+        for st_item in SAMPLE_TYPES:
+            conn.execute(
+                "INSERT OR IGNORE INTO sample_types (type_code, description) VALUES (?, ?)",
+                (st_item["type_code"], st_item["description"])
+            )
 
     conn.commit()
     conn.close()
@@ -365,6 +374,7 @@ def parse_filename_new(filepath: str) -> dict:
 
 def import_csv_old(csv_path: str, db_path=None, uploaded_by=None):
     """Import old-format CSV."""
+    ensure_db_initialized(db_path)
     conn = get_connection(db_path)
     cursor = conn.cursor()
 
@@ -446,6 +456,7 @@ def import_csv_old(csv_path: str, db_path=None, uploaded_by=None):
 
 def import_csv_new(csv_path: str, db_path=None, uploaded_by=None):
     """Import new-format CSV with full metadata columns."""
+    ensure_db_initialized(db_path)
     conn = get_connection(db_path)
     cursor = conn.cursor()
 
@@ -939,6 +950,7 @@ def get_qc_target(analyte_name, qc_level, as_of_date=None, db_path=None):
 
 def import_excel_qc_file(file_bytes, filename, db_path=None, uploaded_by=None):
     """Import QC measurement or mean-value Excel data into the QC database."""
+    ensure_db_initialized(db_path)
     conn = get_connection(db_path)
     cursor = conn.cursor()
 
@@ -987,8 +999,8 @@ def import_excel_qc_file(file_bytes, filename, db_path=None, uploaded_by=None):
         value_col = find_column(df, ["concentration", "mean", "value", "result", "measurement"])
         replicate_col = find_column(df, ["replicate", "rep", "replicate number"])
 
-        hqc_value_columns = [col for col in df.columns if any(token in str(col).strip().lower() for token in ["hqc", "high"]) and any(token in str(col).strip().lower() for token in ["mean", "concentration", "value", "result"])]
-        lqc_value_columns = [col for col in df.columns if any(token in str(col).strip().lower() for token in ["lqc", "low"]) and any(token in str(col).strip().lower() for token in ["mean", "concentration", "value", "result"])]
+        hqc_value_columns = [col for col in df.columns if any(token in str(col).strip().lower() for token in ["hqc", "high"]) and any(token in str(col).strip().lower() for token in ["mean", "conc"])]
+        lqc_value_columns = [col for col in df.columns if any(token in str(col).strip().lower() for token in ["lqc", "low"]) and any(token in str(col).strip().lower() for token in ["mean", "conc"])]
 
         if analyte_col is None:
             conn.close()
@@ -1334,15 +1346,11 @@ def main():
     if mode == "Database":
         st.header("📊 Steroid Panel Database")
 
-        col1, col2, col3 = st.columns(3)
+        st.info("💡 **How it works:** Upload CSV or Excel files to automatically create and populate the database. The schema and reference data are generated on-demand from your first file upload.")
+
+        col1, col2 = st.columns(2)
 
         with col1:
-            if st.button("🔧 Initialize Database", use_container_width=True):
-                with st.spinner("Initializing database..."):
-                    init_db()
-                st.success("Database initialized with schema and analyte definitions!")
-
-        with col2:
             initials = st.text_input(
                 "Enter your initials",
                 max_chars=6,
@@ -1391,7 +1399,7 @@ def main():
         st.header("📤 QC Export")
 
         if not DB_PATH.exists():
-            st.error("Database not found. Initialize it first in the Database tab.")
+            st.error("Database not found. Import data first in the Database tab.")
             return
 
         df_qc = get_qc_data()
@@ -1438,7 +1446,7 @@ def main():
         st.header("📈 QC Dashboard")
 
         if not DB_PATH.exists():
-            st.error("Database not found. Initialize it first in the Database tab.")
+            st.error("Database not found. Import data first in the Database tab.")
             return
 
         df = get_qc_data()
