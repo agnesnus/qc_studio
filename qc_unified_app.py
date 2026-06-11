@@ -1266,63 +1266,140 @@ def flag_outliers(concentrations, sd2_upper, sd2_lower, sd3_upper, sd3_lower):
     return flags
 
 
-def make_qc_chart(dates, concentrations, mean_val, sd2_upper, sd2_lower, sd3_upper, sd3_lower, title):
+def make_qc_chart(dates, concentrations, mean_val, sd2_upper, sd2_lower, sd3_upper, sd3_lower, title, uploader_initials=None):
     """Create Levey-Jennings chart with 2SD/3SD bands."""
     flags = flag_outliers(concentrations, sd2_upper, sd2_lower, sd3_upper, sd3_lower)
+    initials_list = [(str(x).strip().upper() if pd.notna(x) and str(x).strip() else "NA") for x in (uploader_initials if uploader_initials is not None else [None] * len(dates))]
+    if len(initials_list) != len(dates):
+        initials_list = [initials_list[0] if initials_list else "NA"] * len(dates)
 
     fig = go.Figure()
 
     fig.add_hrect(
         y0=sd3_lower, y1=sd3_upper,
-        fillcolor="rgba(255, 99, 71, 0.1)",
+        fillcolor="rgba(255, 99, 71, 0.15)",
         line_width=0,
         annotation_text="±3SD", annotation_position="top left",
     )
 
     fig.add_hrect(
         y0=sd2_lower, y1=sd2_upper,
-        fillcolor="rgba(255, 193, 7, 0.15)",
+        fillcolor="rgba(0, 204, 150, 0.12)",
         line_width=0,
         annotation_text="±2SD", annotation_position="top left",
     )
 
-    fig.add_hline(
-        y=mean_val,
-        line_dash="dash", line_color="green", line_width=2,
-        annotation_text="Mean",
-        annotation_position="bottom right",
-    )
+    fig.add_trace(go.Scatter(
+        x=dates, y=[mean_val] * len(dates),
+        mode="lines",
+        line=dict(color="#008000", dash="dash", width=2),
+        name="Mean",
+        hoverinfo="skip",
+    ))
 
     fig.add_trace(go.Scatter(
-        x=dates, y=concentrations,
+        x=dates, y=[sd2_upper] * len(dates),
+        mode="lines",
+        line=dict(color="#ff9800", dash="dot", width=1),
+        name="+2SD",
+        hoverinfo="skip",
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=dates, y=[sd2_lower] * len(dates),
+        mode="lines",
+        line=dict(color="#ff9800", dash="dot", width=1),
+        name="-2SD",
+        hoverinfo="skip",
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=dates, y=[sd3_upper] * len(dates),
+        mode="lines",
+        line=dict(color="#ff3d00", dash="dash", width=1),
+        name="+3SD",
+        hoverinfo="skip",
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=dates, y=[sd3_lower] * len(dates),
+        mode="lines",
+        line=dict(color="#ff3d00", dash="dash", width=1),
+        name="-3SD",
+        hoverinfo="skip",
+    ))
+
+    fig.add_trace(go.Scatter(
+        x=dates,
+        y=concentrations,
         mode="lines+markers",
-        marker=dict(size=8, color="royalblue"),
-        line=dict(color="royalblue", width=2),
+        marker=dict(size=9, color="#1976d2"),
+        line=dict(color="#1976d2", width=2),
         name="Concentration",
+        customdata=[[initials, mean_val, sd2_upper, sd2_lower, sd3_upper, sd3_lower] for initials in initials_list],
+        hovertemplate=(
+            "Date: %{x}<br>"
+            "Concentration: %{y:.3f}<br>"
+            "Initials: %{customdata[0]}<br>"
+            "Mean: %{customdata[1]:.3f}<br>"
+            "+2SD: %{customdata[2]:.3f}<br>"
+            "-2SD: %{customdata[3]:.3f}<br>"
+            "+3SD: %{customdata[4]:.3f}<br>"
+            "-3SD: %{customdata[5]:.3f}<extra></extra>"
+        ),
     ))
 
     flagged_dates = [d for d, f in zip(dates, flags) if f]
     flagged_concs = [c for c, f in zip(concentrations, flags) if f]
+    flagged_initials = [ini for ini, f in zip(initials_list, flags) if f]
 
     if flagged_dates:
         fig.add_trace(go.Scatter(
             x=flagged_dates, y=flagged_concs,
             mode="markers",
-            marker=dict(size=12, color="red", symbol="triangle-up", line=dict(width=1, color="darkred")),
+            marker=dict(size=12, color="#d32f2f", symbol="triangle-up", line=dict(width=1, color="#b71c1c")),
             name="Flagged",
+            customdata=[[initials, mean_val, sd2_upper, sd2_lower, sd3_upper, sd3_lower] for initials in flagged_initials],
+            hovertemplate=(
+                "Date: %{x}<br>"
+                "Concentration: %{y:.3f}<br>"
+                "Initials: %{customdata[0]}<br>"
+                "Mean: %{customdata[1]:.3f}<br>"
+                "+2SD: %{customdata[2]:.3f}<br>"
+                "-2SD: %{customdata[3]:.3f}<br>"
+                "+3SD: %{customdata[4]:.3f}<br>"
+                "-3SD: %{customdata[5]:.3f}<extra></extra>"
+            ),
         ))
 
     fig.update_layout(
         title=title,
         xaxis_title="Date",
         yaxis_title="Concentration",
-        height=400,
-        showlegend=True,
+        height=420,
+        plot_bgcolor="#ffffff",
+        paper_bgcolor="#ffffff",
+        font=dict(color="#111111"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(t=60, b=40, l=60, r=20),
+    )
+
+    fig.update_xaxes(
+        showgrid=True,
+        gridcolor="#e8e8e8",
+        zeroline=False,
+        tickangle=-45,
+        title_standoff=10,
+    )
+    fig.update_yaxes(
+        showgrid=True,
+        gridcolor="#e8e8e8",
+        zeroline=False,
+        tickformat=".3f",
+        title_standoff=10,
     )
 
     return fig
-
 
 # ==============================================================================
 # STREAMLIT APP
