@@ -1381,7 +1381,7 @@ def make_qc_chart(dates, concentrations, mean_val, sd2_upper, sd2_lower, sd3_upp
         paper_bgcolor="#ffffff",
         font=dict(color="#111111"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        margin=dict(t=60, b=40, l=60, r=20),
+        margin=dict(t=120, b=40, l=60, r=20),
     )
 
     fig.update_xaxes(
@@ -1401,12 +1401,35 @@ def make_qc_chart(dates, concentrations, mean_val, sd2_upper, sd2_lower, sd3_upp
 
     return fig
 
+
 # ==============================================================================
 # STREAMLIT APP
 # ==============================================================================
 
 def main():
     st.set_page_config(page_title="QC Studio", layout="wide")
+    st.markdown(
+        """
+        <style>
+        .stApp, .css-1d391kg, .main, .block-container {
+            background-color: #ffffff !important;
+            color: #111111 !important;
+        }
+        .stSidebar {
+            background-color: #f8fafc !important;
+        }
+        .stButton>button {
+            background-color: #ffffff !important;
+            color: #111111 !important;
+            border: 1px solid #cfd8dc !important;
+        }
+        .stButton>button:hover {
+            background-color: #e3f2fd !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     st.title("🧪 QC Studio")
     st.markdown("Integrated steroid panel database, QC export, and dashboard platform")
 
@@ -1432,7 +1455,7 @@ def main():
                 "Enter your initials",
                 max_chars=6,
                 key="qc_uploader_initials",
-                help="Enter the initials of the user uploading this QC file."
+                help="Enter the initials of the user uploading this QC file. Leave blank if not available."
             )
             uploaded_file = st.file_uploader(
                 "📁 Import QC Data (CSV or Excel)",
@@ -1442,9 +1465,7 @@ def main():
             if uploaded_file:
                 tmp_path = None
                 try:
-                    initials = str(initials).strip().upper()
-                    if not initials:
-                        raise ValueError("Please enter your initials before importing.")
+                    initials = str(initials).strip().upper() if initials else None
                     with st.spinner("Importing QC data..."):
                         suffix = Path(uploaded_file.name).suffix.lower()
                         if suffix == ".csv":
@@ -1532,50 +1553,93 @@ def main():
             return
 
         analytes = sorted(df["analyte"].unique())
-        selected = st.sidebar.selectbox("Select Hormone", analytes)
+        selected = st.sidebar.radio("Select Hormone", analytes)
 
         analyte_data = df[df["analyte"] == selected]
         hqc_data = analyte_data[analyte_data["qc_level"] == "High"].reset_index(drop=True)
         lqc_data = analyte_data[analyte_data["qc_level"] == "Low"].reset_index(drop=True)
 
-        for level_name, level_data in [("HQC", hqc_data), ("LQC", lqc_data)]:
-            if level_data.empty:
-                st.info(f"No {level_name} data for {selected}.")
-                continue
+        chart_cols = st.columns(2)
 
-            concentrations = level_data["concentration"].tolist()
-            dates = [d.replace("-", "/") for d in level_data["run_date"].tolist()]
-            target = get_qc_target(selected, "High" if level_name == "HQC" else "Low", as_of_date=level_data["run_date"].max())
-            if target:
-                mean_val = float(target["target_mean"])
-                sd = float(target["target_sd"])
-                st.caption("Using QC target mean/SD from imported workbook summary values.")
+        if hqc_data.empty:
+            chart_cols[0].info(f"No HQC data for {selected}.")
+        else:
+            hqc_concentrations = hqc_data["concentration"].tolist()
+            hqc_dates = [d.replace("-", "/") for d in hqc_data["run_date"].tolist()]
+            hqc_target = get_qc_target(selected, "High", as_of_date=hqc_data["run_date"].max())
+            if hqc_target:
+                hqc_mean_val = float(hqc_target["target_mean"])
+                hqc_sd = float(hqc_target["target_sd"])
+                chart_cols[0].caption("Using QC target mean/SD from imported workbook summary values.")
             else:
-                mean_val = level_data["concentration"].mean()
-                sd = level_data["concentration"].std()
+                hqc_mean_val = hqc_data["concentration"].mean()
+                hqc_sd = hqc_data["concentration"].std()
 
-            if pd.isna(sd) or sd == 0:
-                st.warning(f"Not enough {level_name} data points for {selected} to compute SD.")
-                continue
+            if pd.isna(hqc_sd) or hqc_sd == 0:
+                chart_cols[0].warning(f"Not enough HQC data points for {selected} to compute SD.")
+            else:
+                hqc_fig = make_qc_chart(
+                    hqc_dates, hqc_concentrations,
+                    hqc_mean_val,
+                    hqc_mean_val + 2 * hqc_sd,
+                    hqc_mean_val - 2 * hqc_sd,
+                    hqc_mean_val + 3 * hqc_sd,
+                    hqc_mean_val - 3 * hqc_sd,
+                    title=f"{selected} — HQC",
+                    uploader_initials=hqc_data["uploaded_by"].fillna("NA").tolist(),
+                )
+                chart_cols[0].plotly_chart(hqc_fig, use_container_width=True)
 
-            sd2_upper = mean_val + 2 * sd
-            sd2_lower = mean_val - 2 * sd
-            sd3_upper = mean_val + 3 * sd
-            sd3_lower = mean_val - 3 * sd
+        if lqc_data.empty:
+            chart_cols[1].info(f"No LQC data for {selected}.")
+        else:
+            lqc_concentrations = lqc_data["concentration"].tolist()
+            lqc_dates = [d.replace("-", "/") for d in lqc_data["run_date"].tolist()]
+            lqc_target = get_qc_target(selected, "Low", as_of_date=lqc_data["run_date"].max())
+            if lqc_target:
+                lqc_mean_val = float(lqc_target["target_mean"])
+                lqc_sd = float(lqc_target["target_sd"])
+                chart_cols[1].caption("Using QC target mean/SD from imported workbook summary values.")
+            else:
+                lqc_mean_val = lqc_data["concentration"].mean()
+                lqc_sd = lqc_data["concentration"].std()
 
-            fig = make_qc_chart(
-                dates, concentrations,
-                mean_val, sd2_upper, sd2_lower, sd3_upper, sd3_lower,
-                title=f"{selected} — {level_name}",
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            if pd.isna(lqc_sd) or lqc_sd == 0:
+                chart_cols[1].warning(f"Not enough LQC data points for {selected} to compute SD.")
+            else:
+                lqc_fig = make_qc_chart(
+                    lqc_dates, lqc_concentrations,
+                    lqc_mean_val,
+                    lqc_mean_val + 2 * lqc_sd,
+                    lqc_mean_val - 2 * lqc_sd,
+                    lqc_mean_val + 3 * lqc_sd,
+                    lqc_mean_val - 3 * lqc_sd,
+                    title=f"{selected} — LQC",
+                    uploader_initials=lqc_data["uploaded_by"].fillna("NA").tolist(),
+                )
+                chart_cols[1].plotly_chart(lqc_fig, use_container_width=True)
 
-            with st.expander(f"{level_name} Statistics"):
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("Mean", f"{mean_val:.4f}")
-                col2.metric("SD", f"{sd:.4f}")
-                col3.metric("Min", f"{min(concentrations):.4f}")
-                col4.metric("Max", f"{max(concentrations):.4f}")
+        st.markdown("---")
+        st.markdown("**HQC and LQC Statistics**")
+        stats_cols = st.columns(2)
+
+        if not hqc_data.empty:
+            with stats_cols[0]:
+                st.subheader("HQC Statistics")
+                st.metric("HQC Mean", f"{hqc_data['concentration'].mean():.4f}")
+                st.metric("HQC SD", f"{hqc_data['concentration'].std():.4f}")
+                st.metric("HQC Min", f"{hqc_data['concentration'].min():.4f}")
+                st.metric("HQC Max", f"{hqc_data['concentration'].max():.4f}")
+
+        if not lqc_data.empty:
+            with stats_cols[1]:
+                st.subheader("LQC Statistics")
+                st.metric("LQC Mean", f"{lqc_data['concentration'].mean():.4f}")
+                st.metric("LQC SD", f"{lqc_data['concentration'].std():.4f}")
+                st.metric("LQC Min", f"{lqc_data['concentration'].min():.4f}")
+                st.metric("LQC Max", f"{lqc_data['concentration'].max():.4f}")
+
+        st.caption("Select a different hormone from the sidebar list.")
 
 
 if __name__ == "__main__":
