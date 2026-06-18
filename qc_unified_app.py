@@ -1377,23 +1377,23 @@ def make_qc_chart(dates, concentrations, mean_val, sd2_upper, sd2_lower, sd3_upp
         xaxis_title="Date",
         yaxis_title="Concentration",
         height=420,
-        plot_bgcolor="#ffffff",
-        paper_bgcolor="#ffffff",
-        font=dict(color="#111111"),
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#666666"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         margin=dict(t=120, b=40, l=60, r=20),
     )
 
     fig.update_xaxes(
         showgrid=True,
-        gridcolor="#e8e8e8",
+        gridcolor="rgba(200,200,200,0.3)",
         zeroline=False,
         tickangle=-45,
         title_standoff=10,
     )
     fig.update_yaxes(
         showgrid=True,
-        gridcolor="#e8e8e8",
+        gridcolor="rgba(200,200,200,0.3)",
         zeroline=False,
         tickformat=".3f",
         title_standoff=10,
@@ -1408,28 +1408,6 @@ def make_qc_chart(dates, concentrations, mean_val, sd2_upper, sd2_lower, sd3_upp
 
 def main():
     st.set_page_config(page_title="QC Studio", layout="wide")
-    st.markdown(
-        """
-        <style>
-        .stApp, .css-1d391kg, .main, .block-container {
-            background-color: #ffffff !important;
-            color: #111111 !important;
-        }
-        .stSidebar {
-            background-color: #f8fafc !important;
-        }
-        .stButton>button {
-            background-color: #ffffff !important;
-            color: #111111 !important;
-            border: 1px solid #cfd8dc !important;
-        }
-        .stButton>button:hover {
-            background-color: #e3f2fd !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
     st.title("🧪 QC Studio")
     st.markdown("Integrated steroid panel database, QC export, and dashboard platform")
 
