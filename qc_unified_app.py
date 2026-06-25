@@ -1446,7 +1446,7 @@ def make_qc_chart(dates, concentrations, mean_val, sd2_upper, sd2_lower, sd3_upp
         ))
 
     fig.update_layout(
-        title=dict(text=title, y=0.98, yanchor="top", pad=dict(b=36)),
+        title=dict(text=title),
         xaxis_title="Date",
         yaxis_title="Concentration",
         height=420,
@@ -1454,7 +1454,7 @@ def make_qc_chart(dates, concentrations, mean_val, sd2_upper, sd2_lower, sd3_upp
         paper_bgcolor="rgba(0,0,0,0)",
         font=dict(color="#666666"),
         legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1),
-        margin=dict(t=150, b=40, l=60, r=20),
+        margin=dict(t=60, b=40, l=60, r=20),
     )
 
     fig.update_xaxes(
