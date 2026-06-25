@@ -25,6 +25,7 @@ from datetime import datetime
 import tempfile
 import os
 from io import BytesIO
+from urllib.parse import quote
 
 # ==============================================================================
 # CONFIGURATION
@@ -948,6 +949,67 @@ def get_qc_target(analyte_name, qc_level, as_of_date=None, db_path=None):
     return None
 
 
+def get_per_date_targets(analyte_name, qc_level, run_dates, db_path=None):
+    """Return a list of (mean, sd) tuples — one per run_date — using the target active on each date."""
+    return [
+        get_qc_target(analyte_name, qc_level, as_of_date=d, db_path=db_path)
+        for d in run_dates
+    ]
+
+
+def get_all_qc_targets(db_path=None):
+    """Return all rows from qc_targets joined with analyte names."""
+    db_path = db_path or DB_PATH
+    if not Path(db_path).exists():
+        return pd.DataFrame()
+    conn = sqlite3.connect(str(db_path))
+    df = pd.read_sql_query("""
+        SELECT qt.target_id, a.name AS analyte, qt.qc_level, qt.lot_number,
+               qt.target_mean, qt.target_sd, qt.effective_from, qt.effective_to
+        FROM qc_targets qt
+        JOIN analytes a ON qt.analyte_id = a.analyte_id
+        ORDER BY a.name, qt.qc_level, qt.effective_from
+    """, conn)
+    conn.close()
+    return df
+
+
+def insert_qc_target(analyte_name, qc_level, target_mean, target_sd,
+                     effective_from, effective_to=None, lot_number=None, db_path=None):
+    """Insert or replace a QC target row. Also closes the previous open row for that analyte/level."""
+    db_path = db_path or DB_PATH
+    ensure_db_initialized(db_path)
+    conn = get_connection(db_path)
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT analyte_id FROM analytes WHERE name = ?", (analyte_name,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        raise ValueError(f"Analyte '{analyte_name}' not found in database.")
+    analyte_id = row[0]
+
+    # Close the previously open-ended row for this analyte+level (set effective_to = effective_from - 1 day)
+    cursor.execute("""
+        UPDATE qc_targets
+        SET effective_to = date(?, '-1 day')
+        WHERE analyte_id = ? AND qc_level = ? AND effective_to IS NULL
+          AND effective_from < ?
+    """, (effective_from, analyte_id, qc_level, effective_from))
+
+    cursor.execute("""
+        INSERT INTO qc_targets (analyte_id, qc_level, lot_number, target_mean, target_sd, effective_from, effective_to)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(analyte_id, qc_level, lot_number, effective_from) DO UPDATE SET
+            target_mean=excluded.target_mean,
+            target_sd=excluded.target_sd,
+            effective_to=excluded.effective_to
+    """, (analyte_id, qc_level, lot_number or "", target_mean, target_sd, effective_from, effective_to))
+
+    conn.commit()
+    conn.close()
+
+
 def import_excel_qc_file(file_bytes, filename, db_path=None, uploaded_by=None):
     """Import QC measurement or mean-value Excel data into the QC database."""
     ensure_db_initialized(db_path)
@@ -1142,7 +1204,6 @@ def import_excel_qc_file(file_bytes, filename, db_path=None, uploaded_by=None):
 # QC DATA QUERIES
 # ==============================================================================
 
-@st.cache_data
 def get_qc_data(db_path=None):
     """Pull all QC results from the database."""
     db_path = db_path or DB_PATH
@@ -1266,8 +1327,30 @@ def flag_outliers(concentrations, sd2_upper, sd2_lower, sd3_upper, sd3_lower):
     return flags
 
 
-def make_qc_chart(dates, concentrations, mean_val, sd2_upper, sd2_lower, sd3_upper, sd3_lower, title, uploader_initials=None):
-    """Create Levey-Jennings chart with 2SD/3SD bands."""
+def make_qc_chart(dates, concentrations, mean_val, sd2_upper, sd2_lower, sd3_upper, sd3_lower, title, uploader_initials=None, means_per_point=None, sds_per_point=None):
+    """Create Levey-Jennings chart with 2SD/3SD bands.
+    If means_per_point/sds_per_point are supplied they override the flat mean_val/sdX_upper/lower
+    and the reference lines are drawn as step functions."""
+    # Build per-point SD band values
+    if means_per_point and sds_per_point and len(means_per_point) == len(dates):
+        pp_mean    = [float(m) for m in means_per_point]
+        pp_sd2_u   = [float(m) + 2 * float(s) for m, s in zip(means_per_point, sds_per_point)]
+        pp_sd2_l   = [float(m) - 2 * float(s) for m, s in zip(means_per_point, sds_per_point)]
+        pp_sd3_u   = [float(m) + 3 * float(s) for m, s in zip(means_per_point, sds_per_point)]
+        pp_sd3_l   = [float(m) - 3 * float(s) for m, s in zip(means_per_point, sds_per_point)]
+        # also recalculate the flat values used for flagging as the last active target
+        mean_val   = pp_mean[-1]
+        sd2_upper  = pp_sd2_u[-1]
+        sd2_lower  = pp_sd2_l[-1]
+        sd3_upper  = pp_sd3_u[-1]
+        sd3_lower  = pp_sd3_l[-1]
+    else:
+        pp_mean  = [mean_val]  * len(dates)
+        pp_sd2_u = [sd2_upper] * len(dates)
+        pp_sd2_l = [sd2_lower] * len(dates)
+        pp_sd3_u = [sd3_upper] * len(dates)
+        pp_sd3_l = [sd3_lower] * len(dates)
+
     flags = flag_outliers(concentrations, sd2_upper, sd2_lower, sd3_upper, sd3_lower)
     initials_list = [(str(x).strip().upper() if pd.notna(x) and str(x).strip() else "NA") for x in (uploader_initials if uploader_initials is not None else [None] * len(dates))]
     if len(initials_list) != len(dates):
@@ -1275,60 +1358,49 @@ def make_qc_chart(dates, concentrations, mean_val, sd2_upper, sd2_lower, sd3_upp
 
     fig = go.Figure()
 
-    fig.add_hrect(
-        y0=sd3_lower, y1=sd3_upper,
-        fillcolor="rgba(255, 99, 71, 0.15)",
-        line_width=0,
-        annotation_text="±3SD", annotation_position="top left",
-    )
-
-    fig.add_hrect(
-        y0=sd2_lower, y1=sd2_upper,
-        fillcolor="rgba(0, 204, 150, 0.12)",
-        line_width=0,
-        annotation_text="±2SD", annotation_position="top left",
-    )
-
+    # Step reference lines (change at each effective date)
     fig.add_trace(go.Scatter(
-        x=dates, y=[mean_val] * len(dates),
+        x=dates, y=pp_mean,
         mode="lines",
-        line=dict(color="#008000", dash="dash", width=2),
+        line=dict(color="#008000", dash="dash", width=2, shape="hv"),
         name="Mean",
         hoverinfo="skip",
     ))
-
     fig.add_trace(go.Scatter(
-        x=dates, y=[sd2_upper] * len(dates),
+        x=dates, y=pp_sd2_u,
         mode="lines",
-        line=dict(color="#ff9800", dash="dot", width=1),
+        line=dict(color="#ff9800", dash="dot", width=1, shape="hv"),
         name="+2SD",
         hoverinfo="skip",
     ))
-
     fig.add_trace(go.Scatter(
-        x=dates, y=[sd2_lower] * len(dates),
+        x=dates, y=pp_sd2_l,
         mode="lines",
-        line=dict(color="#ff9800", dash="dot", width=1),
+        line=dict(color="#ff9800", dash="dot", width=1, shape="hv"),
         name="-2SD",
         hoverinfo="skip",
     ))
-
     fig.add_trace(go.Scatter(
-        x=dates, y=[sd3_upper] * len(dates),
+        x=dates, y=pp_sd3_u,
         mode="lines",
-        line=dict(color="#ff3d00", dash="dash", width=1),
+        line=dict(color="#ff3d00", dash="dash", width=1, shape="hv"),
         name="+3SD",
         hoverinfo="skip",
     ))
-
     fig.add_trace(go.Scatter(
-        x=dates, y=[sd3_lower] * len(dates),
+        x=dates, y=pp_sd3_l,
         mode="lines",
-        line=dict(color="#ff3d00", dash="dash", width=1),
+        line=dict(color="#ff3d00", dash="dash", width=1, shape="hv"),
         name="-3SD",
         hoverinfo="skip",
     ))
 
+    # Per-point hover data includes that point's active mean/SD
+    customdata_main = [
+        [ini, pm, psu, psl, pu3, pl3]
+        for ini, pm, psu, psl, pu3, pl3
+        in zip(initials_list, pp_mean, pp_sd2_u, pp_sd2_l, pp_sd3_u, pp_sd3_l)
+    ]
     fig.add_trace(go.Scatter(
         x=dates,
         y=concentrations,
@@ -1336,7 +1408,7 @@ def make_qc_chart(dates, concentrations, mean_val, sd2_upper, sd2_lower, sd3_upp
         marker=dict(size=9, color="#1976d2"),
         line=dict(color="#1976d2", width=2),
         name="Concentration",
-        customdata=[[initials, mean_val, sd2_upper, sd2_lower, sd3_upper, sd3_lower] for initials in initials_list],
+        customdata=customdata_main,
         hovertemplate=(
             "Date: %{x}<br>"
             "Concentration: %{y:.3f}<br>"
@@ -1352,6 +1424,7 @@ def make_qc_chart(dates, concentrations, mean_val, sd2_upper, sd2_lower, sd3_upp
     flagged_dates = [d for d, f in zip(dates, flags) if f]
     flagged_concs = [c for c, f in zip(concentrations, flags) if f]
     flagged_initials = [ini for ini, f in zip(initials_list, flags) if f]
+    flagged_custom = [cd for cd, f in zip(customdata_main, flags) if f]
 
     if flagged_dates:
         fig.add_trace(go.Scatter(
@@ -1359,7 +1432,7 @@ def make_qc_chart(dates, concentrations, mean_val, sd2_upper, sd2_lower, sd3_upp
             mode="markers",
             marker=dict(size=12, color="#d32f2f", symbol="triangle-up", line=dict(width=1, color="#b71c1c")),
             name="Flagged",
-            customdata=[[initials, mean_val, sd2_upper, sd2_lower, sd3_upper, sd3_lower] for initials in flagged_initials],
+            customdata=flagged_custom,
             hovertemplate=(
                 "Date: %{x}<br>"
                 "Concentration: %{y:.3f}<br>"
@@ -1373,15 +1446,15 @@ def make_qc_chart(dates, concentrations, mean_val, sd2_upper, sd2_lower, sd3_upp
         ))
 
     fig.update_layout(
-        title=title,
+        title=dict(text=title, y=0.98, yanchor="top", pad=dict(b=36)),
         xaxis_title="Date",
         yaxis_title="Concentration",
         height=420,
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
         font=dict(color="#666666"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        margin=dict(t=120, b=40, l=60, r=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1),
+        margin=dict(t=150, b=40, l=60, r=20),
     )
 
     fig.update_xaxes(
@@ -1402,6 +1475,137 @@ def make_qc_chart(dates, concentrations, mean_val, sd2_upper, sd2_lower, sd3_upp
     return fig
 
 
+def create_value_pictogram(concentrations, mean_val, sd_val):
+    """Create an inline SVG pictogram (SD lines, history dots, recent circle)."""
+    if not concentrations:
+        svg = (
+            "<svg xmlns='http://www.w3.org/2000/svg' width='220' height='56'>"
+            "<rect x='1' y='1' width='218' height='54' rx='5' fill='none' stroke='#bdbdbd'/>"
+            "<text x='110' y='34' text-anchor='middle' font-size='12' fill='#9e9e9e'>N/A</text>"
+            "</svg>"
+        )
+        return f"data:image/svg+xml;utf8,{quote(svg)}"
+
+    w = 220
+    h = 56
+    left = 10
+    right = w - 10
+    y_mid = 28
+    y_hist = 40
+
+    if sd_val and sd_val > 0 and not pd.isna(sd_val):
+        effective_sd = float(sd_val)
+    else:
+        data_min = min(concentrations)
+        data_max = max(concentrations)
+        span = max(data_max - data_min, 1e-6)
+        effective_sd = max(span / 6.0, abs(float(mean_val)) * 0.05, 1e-6)
+
+    lo = float(mean_val) - 3 * effective_sd
+    hi = float(mean_val) + 3 * effective_sd
+
+    def x_of(value):
+        ratio = (float(value) - lo) / max(hi - lo, 1e-9)
+        ratio = min(max(ratio, 0.0), 1.0)
+        return left + ratio * (right - left)
+
+    x_mean = x_of(mean_val)
+    x_recent = x_of(concentrations[-1])
+    x_2sd_l = x_of(mean_val - 2 * effective_sd)
+    x_2sd_r = x_of(mean_val + 2 * effective_sd)
+    x_3sd_l = x_of(mean_val - 3 * effective_sd)
+    x_3sd_r = x_of(mean_val + 3 * effective_sd)
+
+    hist_vals = concentrations[:-1][-8:]
+    hist_circles = "".join(
+        f"<circle cx='{x_of(v):.1f}' cy='{y_hist}' r='3.8' fill='#455a64' opacity='0.9'/>"
+        for v in hist_vals
+    )
+
+    svg = f"""
+<svg xmlns='http://www.w3.org/2000/svg' width='{w}' height='{h}'>
+  <rect x='1' y='1' width='{w - 2}' height='{h - 2}' rx='6' fill='none' stroke='#90a4ae' stroke-width='1'/>
+  <line x1='{left}' y1='{y_mid}' x2='{right}' y2='{y_mid}' stroke='#90a4ae' stroke-width='1.2'/>
+  <line x1='{x_3sd_l:.1f}' y1='14' x2='{x_3sd_l:.1f}' y2='42' stroke='#ef5350' stroke-width='2'/>
+  <line x1='{x_3sd_r:.1f}' y1='14' x2='{x_3sd_r:.1f}' y2='42' stroke='#ef5350' stroke-width='2'/>
+  <line x1='{x_2sd_l:.1f}' y1='17' x2='{x_2sd_l:.1f}' y2='39' stroke='#ff9800' stroke-width='1.8'/>
+  <line x1='{x_2sd_r:.1f}' y1='17' x2='{x_2sd_r:.1f}' y2='39' stroke='#ff9800' stroke-width='1.8'/>
+  <line x1='{x_mean:.1f}' y1='12' x2='{x_mean:.1f}' y2='44' stroke='#111111' stroke-width='2.2'/>
+  {hist_circles}
+  <circle cx='{x_recent:.1f}' cy='{y_mid}' r='8.5' fill='#fff200' stroke='#111111' stroke-width='1.6'/>
+  <circle cx='{x_mean:.1f}' cy='{y_mid}' r='3.3' fill='#111111'/>
+</svg>
+""".strip()
+
+    return f"data:image/svg+xml;utf8,{quote(svg)}"
+
+
+def generate_final_report(db_path=None):
+    """Generate comprehensive QC report for all hormones."""
+    db_path = db_path or DB_PATH
+    if not db_path.exists():
+        return None
+    
+    df_qc = get_qc_data(db_path)
+    if df_qc.empty:
+        return None
+    
+    analytes = sorted(df_qc["analyte"].unique())
+    report_data = []
+    
+    for analyte in analytes:
+        analyte_data = df_qc[df_qc["analyte"] == analyte]
+        
+        for qc_level in ["High", "Low"]:
+            level_data = analyte_data[analyte_data["qc_level"] == qc_level].reset_index(drop=True)
+            
+            if level_data.empty:
+                report_data.append({
+                    "Hormone": analyte,
+                    "QC Level": "HQC" if qc_level == "High" else "LQC",
+                    "Pictogram": create_value_pictogram([], 0.0, 0.0),
+                    "Recent": "—",
+                    "Mean": "—",
+                    "Min": "—",
+                    "Max": "—",
+                    "N": 0,
+                    "Status": "N/A"
+                })
+                continue
+            
+            concentrations = level_data["concentration"].tolist()
+            recent = concentrations[-1]
+            mean_val = level_data["concentration"].mean()
+            sd = level_data["concentration"].std() if len(level_data) > 1 else 0
+            
+            target = get_qc_target(analyte, qc_level, as_of_date=level_data["run_date"].max())
+            if target:
+                mean_val = float(target["target_mean"])
+                sd = float(target["target_sd"])
+            
+            sd2_upper = mean_val + 2 * sd
+            sd2_lower = mean_val - 2 * sd
+            
+            if recent > sd2_upper or recent < sd2_lower:
+                status = "⚠ Out of Range"
+            else:
+                status = "✓ OK"
+            
+            report_data.append({
+                "Hormone": analyte,
+                "QC Level": "HQC" if qc_level == "High" else "LQC",
+                "Pictogram": create_value_pictogram(concentrations, mean_val, sd),
+                "Recent": f"{recent:.3f}",
+                "Mean": f"{mean_val:.3f}",
+                "Min": f"{min(concentrations):.3f}",
+                "Max": f"{max(concentrations):.3f}",
+                "N": len(concentrations),
+                "Status": status
+            })
+    
+    return pd.DataFrame(report_data)
+
+
 # ==============================================================================
 # STREAMLIT APP
 # ==============================================================================
@@ -1414,8 +1618,8 @@ def main():
     # Sidebar navigation
     mode = st.sidebar.radio(
         "Select Module",
-        ["Dashboard", "Database", "Export"],
-        help="Choose between viewing QC charts, managing the database, or exporting data"
+        ["Dashboard", "Database", "Export", "Report"],
+        help="Choose between viewing QC charts, managing the database, exporting data, or generating a final report"
     )
 
     st.sidebar.markdown("---")
@@ -1456,6 +1660,7 @@ def main():
                         else:
                             raise ValueError("Unsupported file type. Upload a CSV or Excel file.")
                     st.success(result)
+                    get_qc_data.clear() if hasattr(get_qc_data, 'clear') else None
                 except Exception as e:
                     st.error(f"Import failed: {e}")
                 finally:
@@ -1470,6 +1675,49 @@ def main():
             st.info("No data imported yet. Upload a CSV file to get started.")
         else:
             st.dataframe(df_runs, use_container_width=True)
+
+        st.markdown("---")
+        st.subheader("🎯 QC Targets Manager")
+        st.markdown("View existing mean/SD targets per hormone and add new ones when lot changes.")
+
+        df_targets = get_all_qc_targets()
+        if df_targets.empty:
+            st.info("No QC targets stored yet. Import an Excel workbook or add one manually below.")
+        else:
+            st.dataframe(df_targets, use_container_width=True, hide_index=True)
+
+        with st.expander("➕ Add / Update QC Target"):
+            if not DB_PATH.exists():
+                st.warning("Import data first to initialise the database.")
+            else:
+                all_analyte_names = sorted([a["name"] for a in ANALYTES])
+                t_col1, t_col2 = st.columns(2)
+                with t_col1:
+                    t_analyte = st.selectbox("Hormone", all_analyte_names, key="t_analyte")
+                    t_level   = st.selectbox("QC Level", ["High (HQC)", "Low (LQC)"], key="t_level")
+                    t_lot     = st.text_input("Lot Number (optional)", key="t_lot")
+                with t_col2:
+                    t_mean    = st.number_input("Target Mean", min_value=0.0, format="%.4f", key="t_mean")
+                    t_sd      = st.number_input("Target SD",   min_value=0.0, format="%.4f", key="t_sd")
+                    t_from    = st.date_input("Effective From", key="t_from")
+                    t_to      = st.date_input("Effective To (leave blank = open-ended)", value=None, key="t_to")
+
+                if st.button("💾 Save QC Target", use_container_width=True):
+                    try:
+                        level_code = "High" if "High" in t_level else "Low"
+                        insert_qc_target(
+                            analyte_name  = t_analyte,
+                            qc_level      = level_code,
+                            target_mean   = t_mean,
+                            target_sd     = t_sd,
+                            effective_from= str(t_from),
+                            effective_to  = str(t_to) if t_to else None,
+                            lot_number    = t_lot or None,
+                        )
+                        st.success(f"Saved target for {t_analyte} {level_code} effective {t_from}.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to save: {e}")
 
     elif mode == "Export":
         st.header("📤 QC Export")
@@ -1518,7 +1766,7 @@ def main():
                         use_container_width=True
                     )
 
-    else:  # Dashboard
+    elif mode == "Dashboard":
         st.header("📈 QC Dashboard")
 
         if not DB_PATH.exists():
@@ -1543,15 +1791,19 @@ def main():
             chart_cols[0].info(f"No HQC data for {selected}.")
         else:
             hqc_concentrations = hqc_data["concentration"].tolist()
-            hqc_dates = [d.replace("-", "/") for d in hqc_data["run_date"].tolist()]
-            hqc_target = get_qc_target(selected, "High", as_of_date=hqc_data["run_date"].max())
-            if hqc_target:
-                hqc_mean_val = float(hqc_target["target_mean"])
-                hqc_sd = float(hqc_target["target_sd"])
-                chart_cols[0].caption("Using QC target mean/SD from imported workbook summary values.")
+            hqc_raw_dates = hqc_data["run_date"].tolist()
+            hqc_dates = [d.replace("-", "/") for d in hqc_raw_dates]
+            hqc_targets = get_per_date_targets(selected, "High", hqc_raw_dates)
+            has_targets = any(t is not None for t in hqc_targets)
+            if has_targets:
+                hqc_means = [float(t["target_mean"]) if t else hqc_data["concentration"].mean() for t in hqc_targets]
+                hqc_sds   = [float(t["target_sd"])   if t else hqc_data["concentration"].std()  for t in hqc_targets]
+                hqc_mean_val = hqc_means[-1]; hqc_sd = hqc_sds[-1]
+                chart_cols[0].caption("Mean/SD step-lines follow active QC targets per run date.")
             else:
                 hqc_mean_val = hqc_data["concentration"].mean()
                 hqc_sd = hqc_data["concentration"].std()
+                hqc_means = None; hqc_sds = None
 
             if pd.isna(hqc_sd) or hqc_sd == 0:
                 chart_cols[0].warning(f"Not enough HQC data points for {selected} to compute SD.")
@@ -1565,6 +1817,8 @@ def main():
                     hqc_mean_val - 3 * hqc_sd,
                     title=f"{selected} — HQC",
                     uploader_initials=hqc_data["uploaded_by"].fillna("NA").tolist(),
+                    means_per_point=hqc_means,
+                    sds_per_point=hqc_sds,
                 )
                 chart_cols[0].plotly_chart(hqc_fig, use_container_width=True)
 
@@ -1572,15 +1826,19 @@ def main():
             chart_cols[1].info(f"No LQC data for {selected}.")
         else:
             lqc_concentrations = lqc_data["concentration"].tolist()
-            lqc_dates = [d.replace("-", "/") for d in lqc_data["run_date"].tolist()]
-            lqc_target = get_qc_target(selected, "Low", as_of_date=lqc_data["run_date"].max())
-            if lqc_target:
-                lqc_mean_val = float(lqc_target["target_mean"])
-                lqc_sd = float(lqc_target["target_sd"])
-                chart_cols[1].caption("Using QC target mean/SD from imported workbook summary values.")
+            lqc_raw_dates = lqc_data["run_date"].tolist()
+            lqc_dates = [d.replace("-", "/") for d in lqc_raw_dates]
+            lqc_targets = get_per_date_targets(selected, "Low", lqc_raw_dates)
+            has_lqc_targets = any(t is not None for t in lqc_targets)
+            if has_lqc_targets:
+                lqc_means = [float(t["target_mean"]) if t else lqc_data["concentration"].mean() for t in lqc_targets]
+                lqc_sds   = [float(t["target_sd"])   if t else lqc_data["concentration"].std()  for t in lqc_targets]
+                lqc_mean_val = lqc_means[-1]; lqc_sd = lqc_sds[-1]
+                chart_cols[1].caption("Mean/SD step-lines follow active QC targets per run date.")
             else:
                 lqc_mean_val = lqc_data["concentration"].mean()
                 lqc_sd = lqc_data["concentration"].std()
+                lqc_means = None; lqc_sds = None
 
             if pd.isna(lqc_sd) or lqc_sd == 0:
                 chart_cols[1].warning(f"Not enough LQC data points for {selected} to compute SD.")
@@ -1594,6 +1852,8 @@ def main():
                     lqc_mean_val - 3 * lqc_sd,
                     title=f"{selected} — LQC",
                     uploader_initials=lqc_data["uploaded_by"].fillna("NA").tolist(),
+                    means_per_point=lqc_means,
+                    sds_per_point=lqc_sds,
                 )
                 chart_cols[1].plotly_chart(lqc_fig, use_container_width=True)
 
@@ -1618,6 +1878,52 @@ def main():
                 st.metric("LQC Max", f"{lqc_data['concentration'].max():.4f}")
 
         st.caption("Select a different hormone from the sidebar list.")
+
+    elif mode == "Report":
+        st.header("📋 QC Final Report")
+        
+        if not DB_PATH.exists():
+            st.error("Database not found. Import data first in the Database tab.")
+            return
+        
+        report_df = generate_final_report()
+        if report_df is None or report_df.empty:
+            st.info("No QC data found in the database.")
+            return
+        
+        st.markdown("**Summary of all hormones with LQC and HQC values**")
+        
+        # Display as a table with styling
+        st.dataframe(
+            report_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Hormone": st.column_config.TextColumn("Hormone", width="medium"),
+                "QC Level": st.column_config.TextColumn("QC Level", width="small"),
+                "Pictogram": st.column_config.ImageColumn("Pictogram", width="medium"),
+                "Recent": st.column_config.TextColumn("Recent Value", width="small"),
+                "Mean": st.column_config.TextColumn("Mean", width="small"),
+                "Min": st.column_config.TextColumn("Min", width="small"),
+                "Max": st.column_config.TextColumn("Max", width="small"),
+                "N": st.column_config.NumberColumn("N", width="tiny"),
+                "Status": st.column_config.TextColumn("Status", width="medium"),
+            }
+        )
+        
+        st.markdown("---")
+        st.markdown("**Export Report**")
+        
+        if st.button("📥 Export Report as CSV", use_container_width=True):
+            export_df = report_df.drop(columns=["Pictogram"], errors="ignore")
+            csv = export_df.to_csv(index=False)
+            st.download_button(
+                label="Download Report CSV",
+                data=csv,
+                file_name=f"QC_Report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
 
 
 if __name__ == "__main__":
