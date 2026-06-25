@@ -1453,7 +1453,7 @@ def make_qc_chart(dates, concentrations, mean_val, sd2_upper, sd2_lower, sd3_upp
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
         font=dict(color="#666666"),
-        legend=dict(orientation="h", yanchor="top", y=0.82, xanchor="right", x=1),
+        legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="right", x=1),
         margin=dict(t=115, b=40, l=60, r=20),
     )
 
