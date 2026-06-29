@@ -8,6 +8,8 @@ Features:
 2. QC Export: Export CSV files with HQC and LQC values for all hormones
 3. QC Dashboard: Interactive Levey-Jennings charts with 2SD/3SD bands
 
+Run:
+    streamlit run qc_unified_app.py --server.address localhost --server.port 8501
 """
 
 import sqlite3
@@ -1632,6 +1634,7 @@ def generate_final_report(db_path=None):
     
     for analyte in analytes:
         analyte_data = df_qc[df_qc["analyte"] == analyte]
+        dashboard_url = f"?mode=Dashboard&hormone={quote(str(analyte))}"
         
         for qc_level in ["High", "Low"]:
             level_data = analyte_data[analyte_data["qc_level"] == qc_level].reset_index(drop=True)
@@ -1639,6 +1642,7 @@ def generate_final_report(db_path=None):
             if level_data.empty:
                 report_data.append({
                     "Hormone": analyte,
+                    "Go to Dashboard": dashboard_url,
                     "QC Level": "HQC" if qc_level == "High" else "LQC",
                     "Pictogram": create_value_pictogram([], 0.0, 0.0),
                     "Recent": "—",
@@ -1662,14 +1666,21 @@ def generate_final_report(db_path=None):
             
             sd2_upper = mean_val + 2 * sd
             sd2_lower = mean_val - 2 * sd
-            
-            if recent > sd2_upper or recent < sd2_lower:
-                status = "⚠ Out of Range"
+
+            if pd.isna(sd) or float(sd) <= 0:
+                status = "N/A (SD unavailable)"
             else:
-                status = "✓ OK"
+                z_abs = abs((recent - mean_val) / sd)
+                if z_abs > 3:
+                    status = "⚠ Out of Range (>3 SD)"
+                elif z_abs > 2:
+                    status = "⚠ Out of Range (>2 SD)"
+                else:
+                    status = "✓ OK (within 2 SD)"
             
             report_data.append({
                 "Hormone": analyte,
+                "Go to Dashboard": dashboard_url,
                 "QC Level": "HQC" if qc_level == "High" else "LQC",
                 "Pictogram": create_value_pictogram(concentrations, mean_val, sd),
                 "Recent": f"{recent:.3f}",
@@ -1693,11 +1704,16 @@ def main():
     st.markdown("Integrated steroid panel database, QC export, and dashboard platform")
 
     # Sidebar navigation
+    module_options = ["Dashboard", "Database", "Export", "Report"]
+    query_mode = str(st.query_params.get("mode", "")).strip()
+    default_mode_idx = module_options.index(query_mode) if query_mode in module_options else 0
     mode = st.sidebar.radio(
         "Select Module",
-        ["Dashboard", "Database", "Export", "Report"],
+        module_options,
+        index=default_mode_idx,
         help="Choose between viewing QC charts, managing the database, exporting data, or generating a final report"
     )
+    st.query_params["mode"] = mode
 
     st.sidebar.markdown("---")
     st.sidebar.markdown(f"**Database:** `{DB_PATH.name}`")
@@ -1874,7 +1890,10 @@ def main():
             return
 
         analytes = sorted(df["analyte"].unique())
-        selected = st.sidebar.radio("Select Hormone", analytes)
+        query_hormone = str(st.query_params.get("hormone", "")).strip()
+        default_hormone_idx = analytes.index(query_hormone) if query_hormone in analytes else 0
+        selected = st.sidebar.radio("Select Hormone", analytes, index=default_hormone_idx)
+        st.query_params["hormone"] = selected
 
         analyte_data = df[df["analyte"] == selected]
         hqc_data = analyte_data[analyte_data["qc_level"] == "High"].reset_index(drop=True)
@@ -1995,6 +2014,7 @@ def main():
             hide_index=True,
             column_config={
                 "Hormone": st.column_config.TextColumn("Hormone", width="medium"),
+                "Go to Dashboard": st.column_config.LinkColumn("Open Dashboard", width="small", display_text="Open"),
                 "QC Level": st.column_config.TextColumn("QC Level", width="small"),
                 "Pictogram": st.column_config.ImageColumn("Pictogram", width="medium"),
                 "Recent": st.column_config.TextColumn("Recent Value", width="small"),
