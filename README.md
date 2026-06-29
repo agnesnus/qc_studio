@@ -1,148 +1,185 @@
 # QC Studio
 
-QC Studio is a Streamlit application for:
-- QC data import (CSV and Excel)
-- run storage in SQLite
-- dashboard charts with QC target mean and SD tracking
-- export and report views
+This project is a ready-made website template built with Streamlit.
+
+You can use it as a base and create a new website for a different project, even if you have never coded before.
 
 ---
 
-## Quick Start
+## What this app already does
 
-1. Install dependencies
+- Lets users upload files
+- Stores data in a local database
+- Shows charts and summaries
+- Exports results
+
+You can reuse this structure and replace the content with your own project topic.
+
+---
+
+## Before you start
+
+You only need these things:
+
+1. A GitHub account
+2. A computer with internet
+3. Python installed (version 3.10 or newer is recommended)
+4. A text editor (VS Code is easiest)
+
+---
+
+## Super Simple Plan
+
+1. Copy this project
+2. Change the app title and text
+3. Replace the data fields with your project fields
+4. Test locally
+5. Publish online
+
+---
+
+## Step-by-step for complete beginners
+
+### Step 1: Copy this project to your own GitHub
+
+- Open this repository on GitHub
+- Click Use this template (or create a new repository and upload these files)
+- Give your new repository a name
+
+Now you have your own copy.
+
+### Step 2: Download your copy to your computer
+
+If you know Git, clone it.
+
+If you do not know Git:
+- Click Code on GitHub
+- Click Download ZIP
+- Unzip it on your computer
+
+### Step 3: Open the folder in VS Code
+
+- Open VS Code
+- Choose File > Open Folder
+- Select your project folder
+
+### Step 4: Install required packages
+
+Open the terminal in VS Code and run:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-2. Run the app
+### Step 5: Start the website locally
+
+Run:
 
 ```bash
 streamlit run qc_unified_app.py
 ```
 
----
+A browser page will open. This is your website running on your computer.
 
-## Reuse This Codebase For A New Project
+### Step 6: Change the website text first
 
-Use this repository as a base template when you want to build another Streamlit website with a similar workflow.
+In file qc_unified_app.py, change:
+- Main title
+- Section names
+- Help text
 
-### 1. Duplicate the project
+This is the easiest first change and helps you learn the file layout.
 
-Option A: Use this repository as a template on GitHub.
+### Step 7: Replace project fields with your own
 
-Option B: Clone locally and copy the folder:
+This app currently uses QC terms like analyte, HQC, and LQC.
 
-```bash
-git clone https://github.com/agnesnus/qc_studio.git
-cp -R qc_studio your_new_project
-cd your_new_project
-```
+For your project, replace these with your own terms.
 
-### 2. Rename the app entry file (optional)
+Example:
+- analyte -> product
+- qc_level -> category
+- concentration -> score
 
-If you want a new app name:
+Update in these areas:
+- Data lists near the top of the file
+- Table schema (database section)
+- Upload/import logic
+- Charts and report labels
 
-```bash
-mv qc_unified_app.py app.py
-```
+### Step 8: Keep what you do not need to rebuild
 
-Then run with:
+You can keep these parts and just rename fields:
+- Upload flow
+- Database saving
+- Chart layout
+- Report table
+- CSV export
 
-```bash
-streamlit run app.py
-```
+This saves a lot of time.
 
-### 3. Update project identity
+### Step 9: Test after each small change
 
-Edit these first:
-- `README.md` title and description
-- app title/header in `qc_unified_app.py`
-- module names or menu labels (`Dashboard`, `Database`, `Export`, `Report`)
-
-### 4. Define your new data model
-
-For a new domain/project, update:
-- `ANALYTES` list (or equivalent entities)
-- `SAMPLE_TYPES` if needed
-- SQL schema (`SCHEMA_SQL`) tables/fields
-- importer mappings and column detection logic
-
-### 5. Update import pipelines
-
-Modify these functions for your new input format:
-- `import_csv_old`
-- `import_csv_new`
-- `import_excel_qc_file`
-- helper parsers (filename parsing, column detection, normalization)
-
-Tip: keep one import route stable first (for example CSV), then add complex Excel parsing.
-
-### 6. Update chart and report logic
-
-Adjust these parts:
-- `make_qc_chart` for your new metrics
-- `generate_final_report` for your summary columns
-- `create_value_pictogram` if you want a different visual indicator
-
-### 7. Keep target versioning behavior (recommended)
-
-If your new project also has changing reference ranges over time, keep:
-- `qc_targets` table design with `effective_from` and `effective_to`
-- `get_qc_target` and `get_per_date_targets`
-- step-line rendering in charts
-
-This enables date-aware reference values without rewriting historical records.
-
-### 8. Add target bulk upload for your new project
-
-The app already supports:
-- manual target entry
-- bulk target upload from CSV/Excel
-
-You can reuse `import_qc_targets_file` directly and just rename expected columns if needed.
-
-### 9. Validate after each change
+After edits, run:
 
 ```bash
 python3 -m py_compile qc_unified_app.py
 streamlit run qc_unified_app.py
 ```
 
----
-
-## Suggested Structure For New Projects
-
-- `app.py` or `qc_unified_app.py`: main Streamlit app
-- `requirements.txt`: dependencies
-- `.streamlit/config.toml`: theme/runtime settings
-- `data/` or test folders for sample uploads
-- SQLite DB file generated at runtime
+If the page opens and works, continue.
 
 ---
 
-## Deployment Notes
+## Publish your website online (easy method)
 
-For Streamlit Community Cloud:
-- set main file to `qc_unified_app.py` (or your renamed entry file)
-- ensure `requirements.txt` includes all used packages
-- commit and push changes to GitHub
+Use Streamlit Community Cloud.
+
+1. Push your code to GitHub
+2. Go to share.streamlit.io
+3. Sign in with GitHub
+4. Click New app
+5. Choose your repository
+6. Set main file to qc_unified_app.py
+7. Click Deploy
+
+Your website is now online with a public link.
 
 ---
 
-## Adaptation Checklist
+## If you want to build a different project quickly
 
-- [ ] New project name and branding updated
-- [ ] Data schema updated
-- [ ] Import logic updated for new file formats
-- [ ] Dashboard and report metrics updated
-- [ ] Target/reference range logic verified
-- [ ] README updated with domain-specific instructions
-- [ ] Smoke test done locally
+Use this checklist:
+
+- [ ] Rename app title and sections
+- [ ] Replace data fields with your project fields
+- [ ] Update upload file format rules
+- [ ] Update chart labels and report columns
+- [ ] Test locally
+- [ ] Deploy to Streamlit Cloud
+
+---
+
+## Common beginner tips
+
+- Change one thing at a time
+- Test after every change
+- Keep a backup copy before big edits
+- If something breaks, undo only your last small change
+
+---
+
+## Need help
+
+If you get stuck, open an issue in the repository and include:
+- What you changed
+- The error message
+- A screenshot
+
+That makes troubleshooting much faster.
 
 ---
 
 ## License
 
-See `LICENSE`.
+See LICENSE.
