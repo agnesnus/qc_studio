@@ -8,8 +8,6 @@ Features:
 2. QC Export: Export CSV files with HQC and LQC values for all hormones
 3. QC Dashboard: Interactive Levey-Jennings charts with 2SD/3SD bands
 
-Run:
-    streamlit run qc_unified_app.py --server.address localhost --server.port 8501
 """
 
 import sqlite3
