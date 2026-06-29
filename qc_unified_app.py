@@ -1010,6 +1010,85 @@ def insert_qc_target(analyte_name, qc_level, target_mean, target_sd,
     conn.close()
 
 
+def import_qc_targets_file(file_bytes, filename, db_path=None):
+    """Import mean/SD targets from CSV/Excel file into qc_targets."""
+    db_path = db_path or DB_PATH
+    ensure_db_initialized(db_path)
+
+    suffix = Path(filename).suffix.lower()
+    if suffix == ".csv":
+        df = pd.read_csv(BytesIO(file_bytes))
+    elif suffix in {".xls", ".xlsx"}:
+        df = pd.read_excel(BytesIO(file_bytes))
+    else:
+        raise ValueError("Unsupported target file type. Please upload CSV or Excel.")
+
+    if df.empty:
+        return "No target rows found in file."
+
+    col_map = {str(c).strip().lower(): c for c in df.columns}
+
+    def pick(*names):
+        for n in names:
+            if n in col_map:
+                return col_map[n]
+        return None
+
+    analyte_col = pick("analyte", "hormone", "compound", "name")
+    level_col = pick("qc_level", "qc level", "level", "type")
+    mean_col = pick("target_mean", "target mean", "mean", "qc mean")
+    sd_col = pick("target_sd", "target sd", "sd")
+    from_col = pick("effective_from", "effective from", "from", "date")
+    to_col = pick("effective_to", "effective to", "to")
+    lot_col = pick("lot_number", "lot number", "lot")
+
+    if not analyte_col or not level_col or not mean_col or not sd_col:
+        raise ValueError(
+            "Targets file must include columns for analyte, qc_level, target_mean, and target_sd."
+        )
+
+    default_from = extract_date_from_filename(filename) or datetime.today().strftime("%Y-%m-%d")
+    imported = 0
+    skipped = 0
+
+    for _, row in df.iterrows():
+        analyte_name = str(row[analyte_col]).strip() if pd.notna(row[analyte_col]) else ""
+        if not analyte_name:
+            skipped += 1
+            continue
+
+        qc_level = normalize_qc_level(row[level_col])
+        if qc_level is None:
+            skipped += 1
+            continue
+
+        try:
+            target_mean = float(row[mean_col])
+            target_sd = float(row[sd_col])
+        except Exception:
+            skipped += 1
+            continue
+
+        effective_from = parse_date_value(row[from_col]) if from_col is not None else None
+        effective_from = effective_from or default_from
+        effective_to = parse_date_value(row[to_col]) if to_col is not None else None
+        lot_number = str(row[lot_col]).strip() if lot_col is not None and pd.notna(row[lot_col]) else None
+
+        insert_qc_target(
+            analyte_name=analyte_name,
+            qc_level=qc_level,
+            target_mean=target_mean,
+            target_sd=target_sd,
+            effective_from=effective_from,
+            effective_to=effective_to,
+            lot_number=lot_number,
+            db_path=db_path,
+        )
+        imported += 1
+
+    return f"Imported/updated {imported} target rows" + (f" (skipped {skipped})" if skipped else "")
+
+
 def import_excel_qc_file(file_bytes, filename, db_path=None, uploaded_by=None):
     """Import QC measurement or mean-value Excel data into the QC database."""
     ensure_db_initialized(db_path)
@@ -1685,6 +1764,24 @@ def main():
             st.info("No QC targets stored yet. Import an Excel workbook or add one manually below.")
         else:
             st.dataframe(df_targets, use_container_width=True, hide_index=True)
+
+        with st.expander("📤 Upload Mean/SD Targets File"):
+            st.caption(
+                "Upload CSV/Excel with columns: analyte, qc_level, target_mean, target_sd, "
+                "and optional effective_from, effective_to, lot_number."
+            )
+            targets_file = st.file_uploader(
+                "Upload targets file",
+                type=["csv", "xls", "xlsx"],
+                key="qc_targets_file_uploader",
+            )
+            if targets_file and st.button("⬆️ Import Targets File", use_container_width=True, key="import_targets_file_btn"):
+                try:
+                    msg = import_qc_targets_file(targets_file.read(), targets_file.name)
+                    st.success(msg)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Targets import failed: {e}")
 
         with st.expander("➕ Add / Update QC Target"):
             if not DB_PATH.exists():
